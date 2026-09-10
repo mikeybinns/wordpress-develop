@@ -23,6 +23,7 @@ const json2php = /** @type {typeof import('json2php').default} */ (
 	/** @type {unknown} */ ( require( 'json2php' ) )
 );
 const { fromString } = require( 'php-array-reader' );
+const camelCase = require( 'camelcase' );
 
 const rootDir = path.resolve( __dirname, '../..' );
 const gutenbergDir = path.join( rootDir, 'gutenberg' );
@@ -171,6 +172,8 @@ function copyScripts( config ) {
 
 	const entries = fs.readdirSync( scriptsSrc, { withFileTypes: true } );
 
+	const typesToLoad = [];
+
 	for ( const entry of entries ) {
 		const src = path.join( scriptsSrc, entry.name );
 
@@ -214,8 +217,12 @@ function copyScripts( config ) {
 				 * Flatten package structure: package-name/index.js → package-name.js.
 				 * This matches Core's expected file structure.
 				 */
-				const packageFiles = fs.readdirSync( src );
+				const packageFiles = fs.readdirSync( src, {
+					encoding: 'utf8',
+					recursive: true,
+				} );
 
+				let hadTypes = false;
 				for ( const file of packageFiles ) {
 					if ( /^index\.(js|min\.js)$/.test( file ) ) {
 						const srcFile = path.join( src, file );
@@ -232,6 +239,33 @@ function copyScripts( config ) {
 
 						fs.copyFileSync( srcFile, destPath );
 					}
+					if ( /^types\/(.*)\.d\.(ts|ts\.map)$/.test( file ) ) {
+						hadTypes = true;
+						const srcFile = path.join( src, file );
+						const destFile = path.join(
+							scriptsDest,
+							'types',
+							entry.name,
+							file.replace( /^types\//, '' )
+						);
+
+						fs.mkdirSync( path.dirname( destFile ), {
+							recursive: true,
+						} );
+
+						fs.copyFileSync( srcFile, destFile );
+					}
+				}
+				if ( hadTypes ) {
+					const camelCasedEntryName = camelCase( entry.name );
+					typesToLoad.push( {
+						name: entry.name,
+						typeName: `${ camelCasedEntryName
+							.charAt( 0 )
+							.toUpperCase() }${ camelCasedEntryName.slice(
+							1
+						) }Type`,
+					} );
 				}
 			}
 		} else if ( entry.isFile() && entry.name.endsWith( '.js' ) ) {
@@ -240,6 +274,31 @@ function copyScripts( config ) {
 			fs.mkdirSync( path.dirname( dest ), { recursive: true } );
 			fs.copyFileSync( src, dest );
 		}
+	}
+
+	// Generate types index file
+	if ( typesToLoad.length > 0 ) {
+		const imports = [];
+		const namespaceLines = [];
+
+		for ( const typeToLoad of typesToLoad ) {
+			imports.push(
+				`import * as ${ typeToLoad.typeName } from "./${ typeToLoad.name }/index";`
+			);
+			namespaceLines.push(
+				`"${ typeToLoad.name }"?: typeof ${ typeToLoad.typeName };`
+			);
+		}
+		const indexFile = path.join( scriptsDest, 'types', 'index.d.ts' );
+		fs.writeFileSync(
+			indexFile,
+			`${ imports.join( '\n' ) }
+
+export interface WP {
+	${ namespaceLines.join( '\n	' ) }
+}
+`
+		);
 	}
 
 	console.log( '   ✅ JavaScript packages copied' );
